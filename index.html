@@ -5,15 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Grade 12 Schedule & Automated Conflict-Free Engine</title>
   
+  <!-- Firebase Web SDK Compatibility Scripts -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
   <!-- Standalone Offline Tailwind CSS Core Script -->
   <script>
-    //<!-- ===============Firebase App (the core Firebase SDK)  ============ =====-->
-<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
-
-<!-- Firebase Realtime Database SDK -->
-<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
-    <!-- ======================================================================= -->
-
     /* Standalone Offline Tailwind-like utility generator */
     (function() {
       const style = document.createElement('style');
@@ -722,6 +719,33 @@
   </div>
 
   <script>
+    // --- FIREBASE REALTIME DATABASE CONFIGURATION ---
+    const firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+      databaseURL: "https://YOUR_PROJECT_ID-default-rtdb.firebaseio.com",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT_ID.appspot.com",
+      messagingSenderId: "YOUR_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+
+    // Initialize Firebase
+    let db = null;
+    let scheduleRef = null;
+    let isFirebaseActive = false;
+
+    try {
+      if (typeof firebase !== "undefined") {
+        firebase.initializeApp(firebaseConfig);
+        db = firebase.database();
+        scheduleRef = db.ref('scheduleData');
+        isFirebaseActive = true;
+      }
+    } catch(e) {
+      console.warn("Firebase failed to initialize. Falling back to LocalStorage mode.", e);
+    }
+
     // --- OFFLINE INLINE ICON HELPER ENGINE ---
     const SVG_ICONS = {
       'calendar-range': `<svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/><path d="M17 14h-6"/><path d="M13 18H7"/></svg>`,
@@ -904,11 +928,8 @@
 
     // Initialize App
     window.onload = function() {
-      loadScheduleData();
       populateSelectOptions();
-      evaluateConflicts();
-      renderCurrentTab();
-      updateDashboardStats();
+      loadScheduleData();
       lucide.createIcons();
 
       // Close dropdown menu when clicking outside
@@ -924,27 +945,53 @@
 
     /*
       ==========================================================================
-      REPAIR FIX #5: LOCALSTORAGE PERSISTENCE & DATA NORMALIZATION
+      FIREBASE HYBRID PERSISTENCE ENGINE & DATA NORMALIZATION
       ==========================================================================
     */
     function loadScheduleData() {
-  scheduleRef.on('value', (snapshot) => {
-    const data = snapshot.val();
-    if (data && Array.isArray(data)) {
-      scheduleData = data.map(slot => normalizeSlot(slot));
-    } else if (data && typeof data === 'object') {
-      scheduleData = Object.values(data).map(slot => normalizeSlot(slot));
-    } else {
-      // Fallback to initial seed schedule if Firebase database is empty
-      scheduleData = JSON.parse(JSON.stringify(rawSeedSchedule));
-      scheduleRef.set(scheduleData);
+      if (isFirebaseActive && scheduleRef) {
+        // Realtime Listener from Firebase Cloud Sync
+        scheduleRef.on('value', (snapshot) => {
+          const data = snapshot.val();
+          if (data && Array.isArray(data)) {
+            scheduleData = data.map(slot => normalizeSlot(slot));
+          } else if (data && typeof data === 'object') {
+            scheduleData = Object.values(data).map(slot => normalizeSlot(slot));
+          } else {
+            // Database empty: seed with defaults
+            scheduleData = JSON.parse(JSON.stringify(rawSeedSchedule));
+            saveScheduleData();
+          }
+
+          evaluateConflicts();
+          renderCurrentTab();
+          updateDashboardStats();
+        }, (error) => {
+          console.error("Firebase read error:", error);
+          fallbackLocalLoad();
+        });
+      } else {
+        fallbackLocalLoad();
+      }
     }
-    
-    evaluateConflicts();
-    renderCurrentTab();
-    updateDashboardStats();
-  });
-}
+
+    function fallbackLocalLoad() {
+      const storageKey = 'g12_school_schedule_2026';
+      const saved = localStorage.getItem(storageKey);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          scheduleData = Array.isArray(parsed) ? parsed.map(slot => normalizeSlot(slot)) : JSON.parse(JSON.stringify(rawSeedSchedule));
+        } catch(e) {
+          scheduleData = JSON.parse(JSON.stringify(rawSeedSchedule));
+        }
+      } else {
+        scheduleData = JSON.parse(JSON.stringify(rawSeedSchedule));
+      }
+      evaluateConflicts();
+      renderCurrentTab();
+      updateDashboardStats();
+    }
 
     // Normalizes time slot labels from legacy representations to authoritative slot labels
     function normalizeSlot(slot) {
@@ -966,16 +1013,29 @@
     }
 
     function saveScheduleData() {
-  scheduleRef.set(scheduleData)
-    .then(() => {
-      evaluateConflicts();
-      updateDashboardStats();
-    })
-    .catch((error) => {
-      console.error("Firebase Sync Error:", error);
-      showToast("Cloud sync error! Changes saved locally only.", "warning");
-    });
-}
+      // Local backup sync
+      try {
+        localStorage.setItem('g12_school_schedule_2026', JSON.stringify(scheduleData));
+      } catch(e) {
+        console.warn("LocalStorage write error", e);
+      }
+
+      // Cloud sync to Firebase Database
+      if (isFirebaseActive && scheduleRef) {
+        scheduleRef.set(scheduleData)
+          .then(() => {
+            evaluateConflicts();
+            updateDashboardStats();
+          })
+          .catch((err) => {
+            console.error("Firebase Sync Error:", err);
+            showToast("Cloud sync error! Saved locally.", "warning");
+          });
+      } else {
+        evaluateConflicts();
+        updateDashboardStats();
+      }
+    }
 
     function resetDataToDefault() {
       if (confirm("Reset schedule back to default Grade 12 seed data? All custom modifications will be reverted.")) {
